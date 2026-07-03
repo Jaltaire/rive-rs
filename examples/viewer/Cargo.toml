@@ -8,5 +8,5 @@ publish = false
 pollster = "0.3.0"
 rive-rs = { path = "../../rive-rs", features = ["vello"] }
 vello = { workspace = true }
-wgpu = "27.0.1"
+wgpu = "29.0.4"
 winit = "0.28.6"
