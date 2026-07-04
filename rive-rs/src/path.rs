@@ -51,8 +51,9 @@ impl<'c> Iterator for &'c mut Commands {
         self.len.checked_sub(1).map(|new_len| {
             self.len = new_len;
 
-            let ffi::Command { verb, points } =
-                unsafe { ffi::rive_rs_commands_next(self.raw_commands) };
+            let mut command = core::mem::MaybeUninit::<ffi::Command>::uninit();
+            unsafe { ffi::rive_rs_commands_next(self.raw_commands, command.as_mut_ptr()) };
+            let ffi::Command { verb, points } = unsafe { command.assume_init() };
 
             match verb {
                 Verb::Move => (verb, unsafe { slice::from_raw_parts(points, 1) }),

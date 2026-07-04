@@ -164,7 +164,7 @@ pub struct RendererEntries<R: Renderer> {
     paint_default: unsafe extern "C" fn() -> *mut R::Paint,
     paint_release: unsafe extern "C" fn(*mut R::Paint),
     paint_set_style: unsafe extern "C" fn(*mut R::Paint, PaintStyle),
-    paint_set_color: unsafe extern "C" fn(*mut R::Paint, Color),
+    paint_set_color: unsafe extern "C" fn(*mut R::Paint, u32),
     paint_set_thickness: unsafe extern "C" fn(*mut R::Paint, f32),
     paint_set_join: unsafe extern "C" fn(*mut R::Paint, StrokeJoin),
     paint_set_cap: unsafe extern "C" fn(*mut R::Paint, StrokeCap),
@@ -299,8 +299,13 @@ impl<R: Renderer> RendererEntries<R> {
             (*paint).set_style(style);
         }
 
-        unsafe extern "C" fn paint_set_color<R: Renderer>(paint: *mut R::Paint, color: Color) {
-            (*paint).set_color(color);
+        unsafe extern "C" fn paint_set_color<R: Renderer>(paint: *mut R::Paint, color: u32) {
+            (*paint).set_color(Color {
+                b: color as u8,
+                g: (color >> 8) as u8,
+                r: (color >> 16) as u8,
+                a: (color >> 24) as u8,
+            });
         }
 
         unsafe extern "C" fn paint_set_thickness<R: Renderer>(
@@ -611,7 +616,7 @@ extern "C" {
         inverse_view_transform: *mut f32,
     );
     pub fn rive_rs_scene_release(scene: *mut Scene);
-    pub fn rive_rs_commands_next(commands: *mut Commands) -> Command;
+    pub fn rive_rs_commands_next(commands: *mut Commands, out: *mut Command);
     pub fn rive_rs_scene_width(scene: *mut Scene) -> f32;
     pub fn rive_rs_scene_height(scene: *mut Scene) -> f32;
     pub fn rive_rs_scene_loop(scene: *mut Scene) -> Loop;

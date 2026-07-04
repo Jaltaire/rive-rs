@@ -868,11 +868,11 @@ extern "C"
         std::unique_ptr<Scene> val(std::move(const_cast<Scene*>(scene)));
     }
 
-    Command rive_rs_commands_next(RawPath::Iter* commands)
+    void rive_rs_commands_next(RawPath::Iter* commands, Command* out)
     {
         auto tuple = **commands;
         ++*commands;
-        return {std::get<0>(tuple), std::get<1>(tuple)};
+        *out = {std::get<0>(tuple), std::get<1>(tuple)};
     }
 
     float rive_rs_scene_width(const Scene* scene) { return scene->width(); }
