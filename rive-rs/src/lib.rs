@@ -53,6 +53,8 @@ pub mod scene;
 pub mod state_machine;
 #[cfg(feature = "vello")]
 pub mod vello;
+#[cfg(target_arch = "wasm32")]
+mod wasi_stubs;
 
 pub use crate::{
     artboard::components,
