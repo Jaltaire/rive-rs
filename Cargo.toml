@@ -1,5 +1,5 @@
 [workspace]
-members = ["rive-rs", "examples/*"]
+members = ["rive-rs", "rive-metadata", "examples/*"]
 resolver = "2"
 
 [workspace.dependencies]
