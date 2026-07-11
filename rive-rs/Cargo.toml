@@ -17,6 +17,7 @@ default = ["text", "layout"]
 text = []
 layout = []
 vello = ["dep:bytemuck", "dep:image", "dep:smallvec", "dep:vello"]
+metal-renderer = []
 
 [build-dependencies]
 cc = { version = "1.0.83", features = ["parallel"] }

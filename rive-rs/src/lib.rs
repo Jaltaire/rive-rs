@@ -46,6 +46,8 @@ mod ffi;
 mod file;
 mod instantiate;
 mod linear_animation;
+#[cfg(feature = "metal-renderer")]
+pub mod metal_renderer;
 pub mod path;
 mod raw_iter;
 pub mod renderer;

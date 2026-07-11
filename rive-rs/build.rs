@@ -103,12 +103,98 @@ fn all_files_with_extension<P: AsRef<Path>>(
     })
 }
 
+fn top_level_files_with_extension<P: AsRef<Path>>(
+    path: P,
+    extension: &str,
+) -> impl Iterator<Item = PathBuf> + '_ {
+    WalkDir::new(path)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(move |entry| {
+            entry
+                .ok()
+                .map(|entry| entry.into_path())
+                .filter(|path| path.extension() == Some(&OsString::from(extension)))
+        })
+}
+
+fn metal_renderer_platform_define() -> &'static str {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_abi = env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    match target_os.as_str() {
+        "macos" => "RIVE_MACOSX",
+        "ios" => {
+            if target_abi == "sim" || target_arch == "x86_64" {
+                "RIVE_IOS_SIMULATOR"
+            } else {
+                "RIVE_IOS"
+            }
+        }
+        other => panic!(
+            "The metal-renderer feature only supports macOS and iOS targets, but the target OS is {other}."
+        ),
+    }
+}
+
+fn build_metal_renderer(rive_cpp_path: &Path) {
+    println!("cargo:rerun-if-changed=src/metal_ffi.mm");
+    println!("cargo:rerun-if-changed=generated/shaders");
+
+    let platform_define = metal_renderer_platform_define();
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let renderer_src = rive_cpp_path.join("renderer/src");
+
+    let mut renderer = cc::Build::new();
+    renderer
+        .cpp(true)
+        .include(rive_cpp_path.join("include"))
+        .include(rive_cpp_path.join("renderer/include"))
+        .include(&renderer_src)
+        .include(&manifest_dir)
+        .files(top_level_files_with_extension(&renderer_src, "cpp"))
+        .flag("-std=c++17")
+        .define(platform_define, None)
+        .warnings(false);
+    renderer.compile("rive-renderer");
+
+    let mut renderer_metal = cc::Build::new();
+    renderer_metal
+        .cpp(true)
+        .include(rive_cpp_path.join("include"))
+        .include(rive_cpp_path.join("renderer/include"))
+        .include(&renderer_src)
+        .include(&manifest_dir)
+        .files(top_level_files_with_extension(
+            renderer_src.join("metal"),
+            "mm",
+        ))
+        .file("src/metal_ffi.mm")
+        .flag("-std=c++17")
+        .flag("-fobjc-arc")
+        .define(platform_define, None)
+        .warnings(false);
+    renderer_metal.compile("rive-renderer-metal");
+
+    println!("cargo:rustc-link-lib=framework=Metal");
+    println!("cargo:rustc-link-lib=framework=QuartzCore");
+    println!("cargo:rustc-link-lib=framework=Foundation");
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=src/ffi.cpp");
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
 
     let wasm =
         (env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32")).then(locate_wasi_sdk);
+
+    let metal_renderer = env::var_os("CARGO_FEATURE_METAL_RENDERER").is_some();
+    let cpp_std = if metal_renderer {
+        "-std=c++17"
+    } else {
+        "-std=c++14"
+    };
 
     let rive_cpp_path = env::var("RIVE_CPP_PATH")
         .map(PathBuf::from)
@@ -118,7 +204,7 @@ fn main() {
     ffi.cpp(true)
         .include(rive_cpp_path.join("include"))
         .file("src/ffi.cpp")
-        .flag("-std=c++14")
+        .flag(cpp_std)
         .warnings(false);
     if let Some(wasi) = &wasm {
         configure_wasm(&mut ffi, wasi, true);
@@ -188,7 +274,7 @@ fn main() {
     cfg.cpp(true)
         .include(rive_cpp_path.join("include"))
         .files(all_files_with_extension(rive_cpp_path.join("src"), "cpp"))
-        .flag("-std=c++14")
+        .flag(cpp_std)
         .define("_RIVE_INTERNAL_", None)
         .warnings(false);
 
@@ -209,6 +295,10 @@ fn main() {
         configure_wasm(&mut cfg, wasi, true);
     }
     cfg.compile("rive");
+
+    if metal_renderer {
+        build_metal_renderer(&rive_cpp_path);
+    }
 
     if let Some(wasi) = &wasm {
         emit_wasm_link_flags(wasi);
