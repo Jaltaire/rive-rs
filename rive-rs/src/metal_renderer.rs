@@ -40,6 +40,11 @@ mod ffi {
     }
 
     #[repr(C)]
+    pub struct RawLinearAnimation {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
     pub struct RawBool {
         _private: [u8; 0],
     }
@@ -100,6 +105,35 @@ mod ffi {
         pub fn rive_rs_metal_artboard_release(artboard_instance: *const RawArtboard);
         pub fn rive_rs_metal_artboard_width(artboard_instance: *const RawArtboard) -> f32;
         pub fn rive_rs_metal_artboard_height(artboard_instance: *const RawArtboard) -> f32;
+        pub fn rive_rs_metal_artboard_alignment_transforms(
+            artboard_instance: *const RawArtboard,
+            fit: super::Fit,
+            alignment_x: f32,
+            alignment_y: f32,
+            scale_factor: f32,
+            width: u32,
+            height: u32,
+            view_transform: *mut f32,
+            inverse_view_transform: *mut f32,
+        );
+        pub fn rive_rs_metal_instantiate_linear_animation(
+            artboard_instance: *mut RawArtboard,
+            index: *const usize,
+            linear_animation: *mut *mut RawLinearAnimation,
+        );
+        pub fn rive_rs_metal_instantiate_linear_animation_by_name(
+            artboard_instance: *mut RawArtboard,
+            data: *const u8,
+            len: usize,
+            linear_animation: *mut *mut RawLinearAnimation,
+        );
+        pub fn rive_rs_metal_linear_animation_release(
+            linear_animation: *const RawLinearAnimation,
+        );
+        pub fn rive_rs_metal_linear_animation_advance_and_apply(
+            linear_animation: *mut RawLinearAnimation,
+            elapsed: f32,
+        ) -> bool;
         pub fn rive_rs_metal_instantiate_state_machine(
             artboard_instance: *mut RawArtboard,
             index: *const usize,
@@ -176,7 +210,31 @@ mod ffi {
             render_target: *mut RawRenderTarget,
             mtl_command_buffer: *mut c_void,
         );
+        pub fn rive_rs_metal_command_buffer_new(mtl_command_queue: *mut c_void) -> *mut c_void;
+        pub fn rive_rs_metal_command_buffer_commit(mtl_command_buffer: *mut c_void);
     }
+}
+
+/// Creates a Metal command buffer from the given command queue.
+///
+/// # Safety
+///
+/// `mtl_command_queue` must be a valid `id<MTLCommandQueue>` pointer. The
+/// returned `id<MTLCommandBuffer>` pointer is retained and must be passed to
+/// [`command_buffer_commit`] exactly once to submit and release it.
+pub unsafe fn command_buffer_new(mtl_command_queue: *mut c_void) -> *mut c_void {
+    ffi::rive_rs_metal_command_buffer_new(mtl_command_queue)
+}
+
+/// Commits a command buffer created with [`command_buffer_new`] and releases
+/// the retain that call added.
+///
+/// # Safety
+///
+/// `mtl_command_buffer` must be a pointer returned by [`command_buffer_new`]
+/// that has not been committed yet.
+pub unsafe fn command_buffer_commit(mtl_command_buffer: *mut c_void) {
+    ffi::rive_rs_metal_command_buffer_commit(mtl_command_buffer);
 }
 
 /// Mirrors `rive::Fit` from the C++ runtime.
@@ -251,7 +309,9 @@ unsafe impl Sync for ContextInner {}
 /// A native Rive Renderer bound to a Metal device.
 ///
 /// The context doubles as the [`rive::Factory`] used to import files, so every
-/// [`MetalFile`] keeps its originating context alive.
+/// [`MetalFile`] keeps its originating context alive. Clones share the same
+/// underlying render context.
+#[derive(Clone)]
 pub struct MetalContext {
     inner: Arc<ContextInner>,
 }
@@ -431,6 +491,7 @@ impl Drop for MetalRenderTarget {
 }
 
 unsafe impl Send for MetalRenderTarget {}
+unsafe impl Sync for MetalRenderTarget {}
 
 impl fmt::Debug for MetalRenderTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -457,7 +518,9 @@ impl Drop for FileInner {
 unsafe impl Send for FileInner {}
 unsafe impl Sync for FileInner {}
 
-/// A Rive file imported through a [`MetalContext`].
+/// A Rive file imported through a [`MetalContext`]. Clones share the same
+/// underlying file.
+#[derive(Clone)]
 pub struct MetalFile {
     inner: Arc<FileInner>,
 }
@@ -529,6 +592,8 @@ unsafe impl Send for ArtboardInner {}
 unsafe impl Sync for ArtboardInner {}
 
 /// An artboard instance whose render objects are backed by the Rive Renderer.
+/// Clones share the same underlying artboard instance.
+#[derive(Clone)]
 pub struct MetalArtboard {
     inner: Arc<ArtboardInner>,
 }
@@ -540,6 +605,70 @@ impl MetalArtboard {
 
     pub fn height(&self) -> f32 {
         unsafe { ffi::rive_rs_metal_artboard_height(self.inner.raw.as_ptr()) }
+    }
+
+    pub fn alignment_transforms(
+        &self,
+        fit: Fit,
+        alignment: Alignment,
+        scale_factor: f32,
+        width: u32,
+        height: u32,
+    ) -> ([f32; 6], [f32; 6]) {
+        let mut view_transform = [0.0; 6];
+        let mut inverse_view_transform = [0.0; 6];
+
+        unsafe {
+            ffi::rive_rs_metal_artboard_alignment_transforms(
+                self.inner.raw.as_ptr(),
+                fit,
+                alignment.x,
+                alignment.y,
+                scale_factor,
+                width,
+                height,
+                view_transform.as_mut_ptr(),
+                inverse_view_transform.as_mut_ptr(),
+            );
+        }
+
+        (view_transform, inverse_view_transform)
+    }
+
+    pub fn instantiate_linear_animation(&self, handle: Handle) -> Option<MetalLinearAnimation> {
+        let mut raw = core::ptr::null_mut();
+
+        unsafe {
+            match handle {
+                Handle::Default => {
+                    ffi::rive_rs_metal_instantiate_linear_animation(
+                        self.inner.raw.as_ptr(),
+                        core::ptr::null(),
+                        &mut raw,
+                    );
+                }
+                Handle::Index(index) => {
+                    ffi::rive_rs_metal_instantiate_linear_animation(
+                        self.inner.raw.as_ptr(),
+                        &index,
+                        &mut raw,
+                    );
+                }
+                Handle::Name(name) => {
+                    ffi::rive_rs_metal_instantiate_linear_animation_by_name(
+                        self.inner.raw.as_ptr(),
+                        name.as_ptr(),
+                        name.len(),
+                        &mut raw,
+                    );
+                }
+            }
+        }
+
+        NonNull::new(raw).map(|raw| MetalLinearAnimation {
+            raw,
+            _artboard: Arc::clone(&self.inner),
+        })
     }
 
     pub fn instantiate_state_machine(&self, handle: Handle) -> Option<MetalStateMachine> {
@@ -582,6 +711,40 @@ impl MetalArtboard {
 impl fmt::Debug for MetalArtboard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MetalArtboard").finish()
+    }
+}
+
+/// A linear animation instance driving a [`MetalArtboard`].
+pub struct MetalLinearAnimation {
+    raw: NonNull<ffi::RawLinearAnimation>,
+    _artboard: Arc<ArtboardInner>,
+}
+
+impl MetalLinearAnimation {
+    pub fn advance_and_apply(&mut self, elapsed: Duration) -> bool {
+        unsafe {
+            ffi::rive_rs_metal_linear_animation_advance_and_apply(
+                self.raw.as_ptr(),
+                elapsed.as_secs_f32(),
+            )
+        }
+    }
+}
+
+impl Drop for MetalLinearAnimation {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::rive_rs_metal_linear_animation_release(self.raw.as_ptr());
+        }
+    }
+}
+
+unsafe impl Send for MetalLinearAnimation {}
+unsafe impl Sync for MetalLinearAnimation {}
+
+impl fmt::Debug for MetalLinearAnimation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MetalLinearAnimation").finish()
     }
 }
 
@@ -690,6 +853,7 @@ impl Drop for MetalStateMachine {
 }
 
 unsafe impl Send for MetalStateMachine {}
+unsafe impl Sync for MetalStateMachine {}
 
 impl fmt::Debug for MetalStateMachine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -725,6 +889,7 @@ mod tests {
         fn rive_rs_metal_test_object_release(object: *mut c_void);
     }
 
+    const MTL_PIXEL_FORMAT_RGBA8_UNORM_SRGB: u32 = 71;
     const MTL_PIXEL_FORMAT_BGRA8_UNORM: u32 = 80;
     const RIV: &[u8] = include_bytes!("../../assets/rating-animation.riv");
 
@@ -817,12 +982,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn renders_an_artboard_into_a_metal_texture() {
+    fn render_artboard_to_texture(pixel_format: u32) -> alloc::vec::Vec<u8> {
         const WIDTH: u32 = 256;
         const HEIGHT: u32 = 256;
         const CLEAR_COLOR_ARGB: u32 = 0xFF00_00FF;
-        const CLEAR_COLOR_BGRA_BYTES: [u8; 4] = [0xFF, 0x00, 0x00, 0xFF];
 
         let (mut context, device) = context();
 
@@ -837,13 +1000,11 @@ mod tests {
             .expect("The default state machine failed to instantiate.");
         state_machine.advance_and_apply(Duration::from_millis(16));
 
-        let mut render_target =
-            context.make_render_target(MTL_PIXEL_FORMAT_BGRA8_UNORM, WIDTH, HEIGHT);
+        let mut render_target = context.make_render_target(pixel_format, WIDTH, HEIGHT);
         assert_eq!(render_target.width(), WIDTH);
         assert_eq!(render_target.height(), HEIGHT);
 
-        let texture =
-            unsafe { rive_rs_metal_test_texture_new(device, MTL_PIXEL_FORMAT_BGRA8_UNORM, WIDTH, HEIGHT) };
+        let texture = unsafe { rive_rs_metal_test_texture_new(device, pixel_format, WIDTH, HEIGHT) };
         assert!(!texture.is_null());
         unsafe {
             render_target.set_target_texture(texture);
@@ -853,10 +1014,14 @@ mod tests {
         context.draw_artboard(&artboard, Fit::Contain, Alignment::CENTER, 1.0);
 
         let queue = unsafe { rive_rs_metal_test_command_queue_new(device) };
-        let command_buffer = unsafe { rive_rs_metal_test_command_buffer_new(queue) };
+        let command_buffer = unsafe { super::command_buffer_new(queue) };
         unsafe {
             context.flush(&render_target, command_buffer);
-            rive_rs_metal_test_command_buffer_commit_and_wait(command_buffer);
+        }
+        let wait_buffer = unsafe { rive_rs_metal_test_command_buffer_new(queue) };
+        unsafe {
+            super::command_buffer_commit(command_buffer);
+            rive_rs_metal_test_command_buffer_commit_and_wait(wait_buffer);
         }
 
         let mut pixels = vec![0_u8; (WIDTH * HEIGHT * 4) as usize];
@@ -864,27 +1029,46 @@ mod tests {
             rive_rs_metal_test_texture_read(texture, pixels.as_mut_ptr(), WIDTH, HEIGHT);
         }
 
-        assert!(
-            pixels.chunks_exact(4).any(|pixel| pixel != [0, 0, 0, 0]),
-            "The flush never wrote to the target texture."
-        );
-        assert!(
-            pixels
-                .chunks_exact(4)
-                .any(|pixel| pixel != CLEAR_COLOR_BGRA_BYTES),
-            "The artboard drew no pixels over the clear color."
-        );
-
         drop(state_machine);
         drop(artboard);
         drop(file);
         drop(render_target);
         drop(context);
         unsafe {
-            rive_rs_metal_test_object_release(command_buffer);
             rive_rs_metal_test_object_release(queue);
             rive_rs_metal_test_object_release(texture);
             rive_rs_metal_test_object_release(device);
         }
+
+        pixels
+    }
+
+    fn assert_rendered(pixels: &[u8]) {
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel != [0, 0, 0, 0]),
+            "The flush never wrote to the target texture."
+        );
+
+        let mut distinct = alloc::collections::BTreeSet::new();
+        for pixel in pixels.chunks_exact(4) {
+            distinct.insert(<[u8; 4]>::try_from(pixel).unwrap());
+        }
+        assert!(
+            distinct.len() > 8,
+            "The target texture holds too few distinct pixel values for a drawn artboard: {}.",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn renders_an_artboard_into_a_bgra8_metal_texture() {
+        assert_rendered(&render_artboard_to_texture(MTL_PIXEL_FORMAT_BGRA8_UNORM));
+    }
+
+    #[test]
+    fn renders_an_artboard_into_an_srgb_rgba8_metal_texture() {
+        assert_rendered(&render_artboard_to_texture(
+            MTL_PIXEL_FORMAT_RGBA8_UNORM_SRGB,
+        ));
     }
 }

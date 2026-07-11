@@ -46,7 +46,10 @@ mod ffi;
 mod file;
 mod instantiate;
 mod linear_animation;
-#[cfg(feature = "metal-renderer")]
+#[cfg(all(
+    feature = "metal-renderer",
+    any(target_os = "macos", target_os = "ios")
+))]
 pub mod metal_renderer;
 pub mod path;
 mod raw_iter;

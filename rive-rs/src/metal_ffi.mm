@@ -1,4 +1,5 @@
 #include "rive/artboard.hpp"
+#include "rive/animation/linear_animation_instance.hpp"
 #include "rive/animation/state_machine_input_instance.hpp"
 #include "rive/animation/state_machine_instance.hpp"
 #include "rive/file.hpp"
@@ -156,6 +157,83 @@ extern "C"
         const ArtboardInstance* artboard_instance)
     {
         return artboard_instance->bounds().height();
+    }
+
+    void rive_rs_metal_artboard_alignment_transforms(
+        const ArtboardInstance* artboard_instance,
+        Fit fit,
+        float alignment_x,
+        float alignment_y,
+        float scale_factor,
+        uint32_t width,
+        uint32_t height,
+        float* view_transform,
+        float* inverse_view_transform)
+    {
+        auto view_transform_mat =
+            computeAlignment(fit,
+                             Alignment(alignment_x, alignment_y),
+                             AABB(0.0f,
+                                  0.0f,
+                                  static_cast<float>(width),
+                                  static_cast<float>(height)),
+                             artboard_instance->bounds(),
+                             scale_factor);
+        auto inverse_view_transform_mat =
+            view_transform_mat.invertOrIdentity();
+
+        std::copy(view_transform_mat.values(),
+                  view_transform_mat.values() + 6,
+                  view_transform);
+        std::copy(inverse_view_transform_mat.values(),
+                  inverse_view_transform_mat.values() + 6,
+                  inverse_view_transform);
+    }
+
+    void rive_rs_metal_instantiate_linear_animation(
+        ArtboardInstance* artboard_instance,
+        const size_t* index,
+        LinearAnimationInstance** linear_animation)
+    {
+        if (index)
+        {
+            if (*index < (size_t)artboard_instance->animationCount())
+            {
+                *linear_animation =
+                    artboard_instance->animationAt(*index).release();
+            }
+        }
+        else
+        {
+            auto ptr = artboard_instance->animationAt(0);
+            if (ptr)
+            {
+                *linear_animation = ptr.release();
+            }
+        }
+    }
+
+    void rive_rs_metal_instantiate_linear_animation_by_name(
+        ArtboardInstance* artboard_instance,
+        const char* data,
+        size_t len,
+        LinearAnimationInstance** linear_animation)
+    {
+        *linear_animation =
+            artboard_instance->animationNamed({data, len}).release();
+    }
+
+    void rive_rs_metal_linear_animation_release(
+        const LinearAnimationInstance* linear_animation)
+    {
+        std::unique_ptr<LinearAnimationInstance> val(
+            std::move(const_cast<LinearAnimationInstance*>(linear_animation)));
+    }
+
+    bool rive_rs_metal_linear_animation_advance_and_apply(
+        LinearAnimationInstance* linear_animation, float elapsed)
+    {
+        return linear_animation->advanceAndApply(elapsed);
     }
 
     void rive_rs_metal_instantiate_state_machine(
@@ -339,6 +417,21 @@ extern "C"
         flush_resources.renderTarget = render_target;
         flush_resources.externalCommandBuffer = mtl_command_buffer;
         context->renderContext->flush(flush_resources);
+    }
+
+    void* rive_rs_metal_command_buffer_new(void* mtl_command_queue)
+    {
+        id<MTLCommandQueue> queue =
+            (__bridge id<MTLCommandQueue>)mtl_command_queue;
+
+        return (__bridge_retained void*)[queue commandBuffer];
+    }
+
+    void rive_rs_metal_command_buffer_commit(void* mtl_command_buffer)
+    {
+        id<MTLCommandBuffer> command_buffer =
+            (__bridge_transfer id<MTLCommandBuffer>)mtl_command_buffer;
+        [command_buffer commit];
     }
 
     void* rive_rs_metal_test_default_device(void)

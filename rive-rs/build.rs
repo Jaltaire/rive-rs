@@ -118,31 +118,28 @@ fn top_level_files_with_extension<P: AsRef<Path>>(
         })
 }
 
-fn metal_renderer_platform_define() -> &'static str {
+fn metal_renderer_platform_define() -> Option<&'static str> {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_abi = env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
     match target_os.as_str() {
-        "macos" => "RIVE_MACOSX",
+        "macos" => Some("RIVE_MACOSX"),
         "ios" => {
             if target_abi == "sim" || target_arch == "x86_64" {
-                "RIVE_IOS_SIMULATOR"
+                Some("RIVE_IOS_SIMULATOR")
             } else {
-                "RIVE_IOS"
+                Some("RIVE_IOS")
             }
         }
-        other => panic!(
-            "The metal-renderer feature only supports macOS and iOS targets, but the target OS is {other}."
-        ),
+        _ => None,
     }
 }
 
-fn build_metal_renderer(rive_cpp_path: &Path) {
+fn build_metal_renderer(rive_cpp_path: &Path, platform_define: &str) {
     println!("cargo:rerun-if-changed=src/metal_ffi.mm");
     println!("cargo:rerun-if-changed=generated/shaders");
 
-    let platform_define = metal_renderer_platform_define();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let renderer_src = rive_cpp_path.join("renderer/src");
 
@@ -189,8 +186,11 @@ fn main() {
     let wasm =
         (env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32")).then(locate_wasi_sdk);
 
-    let metal_renderer = env::var_os("CARGO_FEATURE_METAL_RENDERER").is_some();
-    let cpp_std = if metal_renderer {
+    let metal_platform_define = env::var_os("CARGO_FEATURE_METAL_RENDERER")
+        .is_some()
+        .then(metal_renderer_platform_define)
+        .flatten();
+    let cpp_std = if metal_platform_define.is_some() {
         "-std=c++17"
     } else {
         "-std=c++14"
@@ -296,8 +296,8 @@ fn main() {
     }
     cfg.compile("rive");
 
-    if metal_renderer {
-        build_metal_renderer(&rive_cpp_path);
+    if let Some(platform_define) = metal_platform_define {
+        build_metal_renderer(&rive_cpp_path, platform_define);
     }
 
     if let Some(wasi) = &wasm {
