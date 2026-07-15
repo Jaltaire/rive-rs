@@ -18,6 +18,7 @@ pub(crate) fn transform(x: f32, y: f32, t: &[f32; 6]) -> [f32; 2] {
 pub struct Viewport {
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) content_rect: Option<[u32; 4]>,
     pub(crate) inverse_view_transform: [f32; 6],
 }
 
@@ -37,6 +38,20 @@ impl Viewport {
         self.width = width;
         self.height = height;
     }
+
+    /// Aligns the artboard inside the given sub rectangle of the viewport
+    /// instead of the full viewport. Content that overflows the artboard can
+    /// then draw into the remaining margins, which would otherwise be
+    /// impossible because the alignment maps the artboard edge to edge.
+    #[inline]
+    pub fn set_content_rect(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        self.content_rect = Some([x, y, width, height]);
+    }
+
+    #[inline]
+    pub fn clear_content_rect(&mut self) {
+        self.content_rect = None;
+    }
 }
 
 impl Default for Viewport {
@@ -45,6 +60,7 @@ impl Default for Viewport {
         Self {
             width: 0,
             height: 0,
+            content_rect: None,
             inverse_view_transform: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
         }
     }
@@ -179,14 +195,27 @@ macro_rules! impl_scene {
                 let mut view_transform = [0.0; 6];
                 let mut inverse_view_transform = [0.0; 6];
 
+                let [frame_x, frame_y, frame_width, frame_height] = viewport
+                    .content_rect
+                    .unwrap_or([0, 0, viewport.width, viewport.height]);
+
                 unsafe {
                     crate::ffi::rive_rs_artboard_instance_transforms(
                         self.raw_artboard(),
-                        viewport.width,
-                        viewport.height,
+                        frame_width,
+                        frame_height,
                         view_transform.as_mut_ptr(),
                         inverse_view_transform.as_mut_ptr(),
                     );
+                }
+
+                if frame_x != 0 || frame_y != 0 {
+                    let (offset_x, offset_y) = (frame_x as f32, frame_y as f32);
+                    view_transform[4] += offset_x;
+                    view_transform[5] += offset_y;
+                    let [ia, ib, ic, id, itx, ity] = inverse_view_transform;
+                    inverse_view_transform[4] = itx - (ia * offset_x + ic * offset_y);
+                    inverse_view_transform[5] = ity - (ib * offset_x + id * offset_y);
                 }
 
                 viewport.inverse_view_transform = inverse_view_transform;
