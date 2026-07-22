@@ -27,6 +27,11 @@ const FINGERPRINT: [u8; 4] = *b"RIVE";
 const LINEAR_ANIMATION_TYPE_KEY: u64 = 31;
 const STATE_MACHINE_TYPE_KEY: u64 = 53;
 const NAME_PROPERTY_KEY: u64 = 55;
+const FPS_PROPERTY_KEY: u64 = 56;
+const DURATION_PROPERTY_KEY: u64 = 57;
+
+const DEFAULT_FPS: u32 = 60;
+const DEFAULT_DURATION_FRAMES: u32 = 60;
 
 const FIELD_STRING: u8 = 1;
 const FIELD_DOUBLE: u8 = 2;
@@ -34,11 +39,30 @@ const FIELD_COLOR: u8 = 3;
 
 /// The names of the animations and state machines found in a Rive file, listed
 /// in the order they appear. Names may repeat when a file contains more than one
-/// artboard.
+/// artboard. `animation_details` carries the timing of each entry in
+/// `animations`, index for index.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Metadata {
     pub animations: Vec<String>,
     pub state_machines: Vec<String>,
+    pub animation_details: Vec<AnimationInfo>,
+}
+
+/// The declared timing of a linear animation. The Rive format omits properties
+/// that hold their default values, so an absent fps or duration falls back to
+/// the runtime defaults of 60 frames per second and 60 frames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnimationInfo {
+    pub name: String,
+    pub fps: u32,
+    pub duration_frames: u32,
+}
+
+impl AnimationInfo {
+    /// The animation's length in seconds.
+    pub fn duration_seconds(&self) -> f64 {
+        f64::from(self.duration_frames) / f64::from(self.fps)
+    }
 }
 
 /// A failure encountered while reading a Rive file's metadata.
@@ -201,6 +225,8 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
         let is_named_target =
             type_key == LINEAR_ANIMATION_TYPE_KEY || type_key == STATE_MACHINE_TYPE_KEY;
         let mut name: Option<String> = None;
+        let mut fps: Option<u32> = None;
+        let mut duration_frames: Option<u32> = None;
 
         loop {
             let property_key = reader.read_var_uint()?;
@@ -219,14 +245,26 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
                 }
                 FIELD_DOUBLE | FIELD_COLOR => reader.skip(4)?,
                 _ => {
-                    reader.read_var_uint()?;
+                    let value = reader.read_var_uint()?;
+                    if type_key == LINEAR_ANIMATION_TYPE_KEY {
+                        if property_key == FPS_PROPERTY_KEY {
+                            fps = u32::try_from(value).ok();
+                        } else if property_key == DURATION_PROPERTY_KEY {
+                            duration_frames = u32::try_from(value).ok();
+                        }
+                    }
                 }
             }
         }
 
         if let Some(name) = name {
             if type_key == LINEAR_ANIMATION_TYPE_KEY {
-                metadata.animations.push(name);
+                metadata.animations.push(name.clone());
+                metadata.animation_details.push(AnimationInfo {
+                    name,
+                    fps: fps.unwrap_or(DEFAULT_FPS),
+                    duration_frames: duration_frames.unwrap_or(DEFAULT_DURATION_FRAMES),
+                });
             } else {
                 metadata.state_machines.push(name);
             }
@@ -434,6 +472,95 @@ mod tests {
 
         let metadata = read(&bytes).unwrap();
         assert_eq!(metadata.state_machines, vec!["Flow".to_string()]);
+    }
+
+    #[test]
+    fn animation_details_default_to_sixty_fps_and_sixty_frames() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Idle"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(
+            metadata.animation_details,
+            vec![AnimationInfo {
+                name: "Idle".to_string(),
+                fps: 60,
+                duration_frames: 60,
+            }]
+        );
+        assert_eq!(metadata.animation_details[0].duration_seconds(), 1.0);
+    }
+
+    #[test]
+    fn animation_details_read_declared_fps_and_duration() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .declare(FPS_PROPERTY_KEY, 0)
+            .declare(DURATION_PROPERTY_KEY, 0)
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[
+                    (NAME_PROPERTY_KEY, Value::Str("Wave")),
+                    (FPS_PROPERTY_KEY, Value::Uint(24)),
+                    (DURATION_PROPERTY_KEY, Value::Uint(48)),
+                ],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(
+            metadata.animation_details,
+            vec![AnimationInfo {
+                name: "Wave".to_string(),
+                fps: 24,
+                duration_frames: 48,
+            }]
+        );
+        assert_eq!(metadata.animation_details[0].duration_seconds(), 2.0);
+    }
+
+    #[test]
+    fn animation_details_ignore_timing_keys_on_other_objects() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .declare(FPS_PROPERTY_KEY, 0)
+            .object(7, &[(FPS_PROPERTY_KEY, Value::Uint(24))])
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Idle"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(metadata.animation_details[0].fps, 60);
+    }
+
+    #[test]
+    fn animation_details_match_the_animation_name_list() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Walk"))],
+            )
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Run"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        let names: Vec<&str> = metadata
+            .animation_details
+            .iter()
+            .map(|info| info.name.as_str())
+            .collect();
+        assert_eq!(names, metadata.animations);
     }
 
     #[test]
