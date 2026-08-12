@@ -41,11 +41,11 @@ for r in 1..=5 {
 
 extern crate alloc;
 
-mod artboard;
+pub mod artboard;
 mod ffi;
-mod file;
+pub mod file;
 mod instantiate;
-mod linear_animation;
+pub mod linear_animation;
 #[cfg(all(
     feature = "metal-renderer",
     any(target_os = "macos", target_os = "ios")
