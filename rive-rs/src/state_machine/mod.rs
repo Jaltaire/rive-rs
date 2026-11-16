@@ -14,7 +14,7 @@ mod inputs;
 
 pub use self::{
     events::{Event, EventIter, Property},
-    inputs::{Bool, InputIter, Number, Trigger},
+    inputs::{Bool, Input, InputIter, Number, Trigger},
 };
 
 pub struct StateMachine<R: Renderer> {
