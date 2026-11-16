@@ -24,8 +24,10 @@ use field_types::KNOWN_FIELD_TYPES;
 
 const FINGERPRINT: [u8; 4] = *b"RIVE";
 
+const ARTBOARD_TYPE_KEY: u64 = 1;
 const LINEAR_ANIMATION_TYPE_KEY: u64 = 31;
 const STATE_MACHINE_TYPE_KEY: u64 = 53;
+const COMPONENT_NAME_PROPERTY_KEY: u64 = 4;
 const NAME_PROPERTY_KEY: u64 = 55;
 const FPS_PROPERTY_KEY: u64 = 56;
 const DURATION_PROPERTY_KEY: u64 = 57;
@@ -46,6 +48,24 @@ pub struct Metadata {
     pub animations: Vec<String>,
     pub state_machines: Vec<String>,
     pub animation_details: Vec<AnimationInfo>,
+    pub artboards: Vec<ArtboardInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArtboardInfo {
+    pub name: String,
+    pub animations: Vec<String>,
+    pub state_machines: Vec<String>,
+}
+
+impl Metadata {
+    pub fn default_artboard(&self) -> Option<&ArtboardInfo> {
+        self.artboards.first()
+    }
+
+    pub fn artboard(&self, name: &str) -> Option<&ArtboardInfo> {
+        self.artboards.iter().find(|artboard| artboard.name == name)
+    }
 }
 
 /// The declared timing of a linear animation. The Rive format omits properties
@@ -224,7 +244,9 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
         let type_key = reader.read_var_uint()?;
         let is_named_target =
             type_key == LINEAR_ANIMATION_TYPE_KEY || type_key == STATE_MACHINE_TYPE_KEY;
+        let is_artboard = type_key == ARTBOARD_TYPE_KEY;
         let mut name: Option<String> = None;
+        let mut artboard_name = String::new();
         let mut fps: Option<u32> = None;
         let mut duration_frames: Option<u32> = None;
 
@@ -241,6 +263,9 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
                     if property_key == NAME_PROPERTY_KEY && is_named_target {
                         let text = std::str::from_utf8(raw).map_err(|_| Error::InvalidName)?;
                         name = Some(text.to_owned());
+                    } else if property_key == COMPONENT_NAME_PROPERTY_KEY && is_artboard {
+                        let text = std::str::from_utf8(raw).map_err(|_| Error::InvalidName)?;
+                        artboard_name = text.to_owned();
                     }
                 }
                 FIELD_DOUBLE | FIELD_COLOR => reader.skip(4)?,
@@ -257,8 +282,19 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
             }
         }
 
+        if is_artboard {
+            metadata.artboards.push(ArtboardInfo {
+                name: artboard_name,
+                ..ArtboardInfo::default()
+            });
+        }
+
         if let Some(name) = name {
+            let artboard = metadata.artboards.last_mut();
             if type_key == LINEAR_ANIMATION_TYPE_KEY {
+                if let Some(artboard) = artboard {
+                    artboard.animations.push(name.clone());
+                }
                 metadata.animations.push(name.clone());
                 metadata.animation_details.push(AnimationInfo {
                     name,
@@ -266,6 +302,9 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
                     duration_frames: duration_frames.unwrap_or(DEFAULT_DURATION_FRAMES),
                 });
             } else {
+                if let Some(artboard) = artboard {
+                    artboard.state_machines.push(name.clone());
+                }
                 metadata.state_machines.push(name);
             }
         }
@@ -561,6 +600,158 @@ mod tests {
             .map(|info| info.name.as_str())
             .collect();
         assert_eq!(names, metadata.animations);
+    }
+
+    #[test]
+    fn groups_animations_and_state_machines_under_the_artboard_they_follow() {
+        let bytes = Builder::new()
+            .declare(COMPONENT_NAME_PROPERTY_KEY, FIELD_STRING)
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Character"))],
+            )
+            .object(7, &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Body"))])
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Wave"))],
+            )
+            .object(
+                STATE_MACHINE_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Moods"))],
+            )
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Badge"))],
+            )
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Shine"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(
+            metadata.artboards,
+            vec![
+                ArtboardInfo {
+                    name: "Character".to_string(),
+                    animations: vec!["Wave".to_string()],
+                    state_machines: vec!["Moods".to_string()],
+                },
+                ArtboardInfo {
+                    name: "Badge".to_string(),
+                    animations: vec!["Shine".to_string()],
+                    state_machines: Vec::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            metadata.animations,
+            vec!["Wave".to_string(), "Shine".to_string()]
+        );
+        assert_eq!(metadata.state_machines, vec!["Moods".to_string()]);
+    }
+
+    #[test]
+    fn the_default_artboard_is_the_first_and_others_are_found_by_name() {
+        let bytes = Builder::new()
+            .declare(COMPONENT_NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("First"))],
+            )
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Second"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(
+            metadata
+                .default_artboard()
+                .map(|artboard| artboard.name.as_str()),
+            Some("First")
+        );
+        assert_eq!(
+            metadata
+                .artboard("Second")
+                .map(|artboard| artboard.name.as_str()),
+            Some("Second")
+        );
+        assert_eq!(metadata.artboard("Third"), None);
+    }
+
+    #[test]
+    fn an_artboard_without_a_name_is_named_by_the_empty_string() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(ARTBOARD_TYPE_KEY, &[])
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Idle"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(
+            metadata.default_artboard(),
+            Some(&ArtboardInfo {
+                name: String::new(),
+                animations: vec!["Idle".to_string()],
+                state_machines: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_component_s_name_is_never_taken_for_an_artboard_s() {
+        let bytes = Builder::new()
+            .declare(COMPONENT_NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Stage"))],
+            )
+            .object(7, &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Shape"))])
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert_eq!(metadata.artboards.len(), 1);
+        assert_eq!(metadata.artboards[0].name, "Stage");
+    }
+
+    #[test]
+    fn animations_before_any_artboard_belong_to_none() {
+        let bytes = Builder::new()
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[(NAME_PROPERTY_KEY, Value::Str("Loose"))],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        assert!(metadata.artboards.is_empty());
+        assert_eq!(metadata.default_artboard(), None);
+        assert_eq!(metadata.animations, vec!["Loose".to_string()]);
+    }
+
+    #[test]
+    fn reads_the_artboards_of_a_real_file() {
+        let bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../assets/rating-animation.riv"
+        ))
+        .unwrap();
+        let metadata = read(&bytes).unwrap();
+        assert!(!metadata.artboards.is_empty());
+        let grouped: usize = metadata
+            .artboards
+            .iter()
+            .map(|artboard| artboard.animations.len())
+            .sum();
+        assert_eq!(grouped, metadata.animations.len());
     }
 
     #[test]
