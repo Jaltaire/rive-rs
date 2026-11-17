@@ -56,6 +56,15 @@ pub struct ArtboardInfo {
     pub name: String,
     pub animations: Vec<String>,
     pub state_machines: Vec<String>,
+    pub animation_details: Vec<AnimationInfo>,
+}
+
+impl ArtboardInfo {
+    pub fn animation(&self, name: &str) -> Option<&AnimationInfo> {
+        self.animation_details
+            .iter()
+            .find(|animation| animation.name == name)
+    }
 }
 
 impl Metadata {
@@ -292,15 +301,17 @@ pub fn read(bytes: &[u8]) -> Result<Metadata, Error> {
         if let Some(name) = name {
             let artboard = metadata.artboards.last_mut();
             if type_key == LINEAR_ANIMATION_TYPE_KEY {
-                if let Some(artboard) = artboard {
-                    artboard.animations.push(name.clone());
-                }
-                metadata.animations.push(name.clone());
-                metadata.animation_details.push(AnimationInfo {
-                    name,
+                let details = AnimationInfo {
+                    name: name.clone(),
                     fps: fps.unwrap_or(DEFAULT_FPS),
                     duration_frames: duration_frames.unwrap_or(DEFAULT_DURATION_FRAMES),
-                });
+                };
+                if let Some(artboard) = artboard {
+                    artboard.animations.push(name.clone());
+                    artboard.animation_details.push(details.clone());
+                }
+                metadata.animations.push(name);
+                metadata.animation_details.push(details);
             } else {
                 if let Some(artboard) = artboard {
                     artboard.state_machines.push(name.clone());
@@ -638,11 +649,21 @@ mod tests {
                     name: "Character".to_string(),
                     animations: vec!["Wave".to_string()],
                     state_machines: vec!["Moods".to_string()],
+                    animation_details: vec![AnimationInfo {
+                        name: "Wave".to_string(),
+                        fps: DEFAULT_FPS,
+                        duration_frames: DEFAULT_DURATION_FRAMES,
+                    }],
                 },
                 ArtboardInfo {
                     name: "Badge".to_string(),
                     animations: vec!["Shine".to_string()],
                     state_machines: Vec::new(),
+                    animation_details: vec![AnimationInfo {
+                        name: "Shine".to_string(),
+                        fps: DEFAULT_FPS,
+                        duration_frames: DEFAULT_DURATION_FRAMES,
+                    }],
                 },
             ]
         );
@@ -701,6 +722,11 @@ mod tests {
                 name: String::new(),
                 animations: vec!["Idle".to_string()],
                 state_machines: Vec::new(),
+                animation_details: vec![AnimationInfo {
+                    name: "Idle".to_string(),
+                    fps: DEFAULT_FPS,
+                    duration_frames: DEFAULT_DURATION_FRAMES,
+                }],
             })
         );
     }
@@ -738,6 +764,60 @@ mod tests {
     }
 
     #[test]
+    fn each_artboard_keeps_the_timing_of_its_own_animations_and_finds_them_by_name() {
+        let bytes = Builder::new()
+            .declare(COMPONENT_NAME_PROPERTY_KEY, FIELD_STRING)
+            .declare(NAME_PROPERTY_KEY, FIELD_STRING)
+            .declare(FPS_PROPERTY_KEY, 0)
+            .declare(DURATION_PROPERTY_KEY, 0)
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Character"))],
+            )
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[
+                    (NAME_PROPERTY_KEY, Value::Str("Wave")),
+                    (DURATION_PROPERTY_KEY, Value::Uint(120)),
+                ],
+            )
+            .object(
+                ARTBOARD_TYPE_KEY,
+                &[(COMPONENT_NAME_PROPERTY_KEY, Value::Str("Badge"))],
+            )
+            .object(
+                LINEAR_ANIMATION_TYPE_KEY,
+                &[
+                    (NAME_PROPERTY_KEY, Value::Str("Wave")),
+                    (FPS_PROPERTY_KEY, Value::Uint(24)),
+                    (DURATION_PROPERTY_KEY, Value::Uint(0)),
+                ],
+            )
+            .build();
+
+        let metadata = read(&bytes).unwrap();
+        let character = metadata.artboard("Character").unwrap();
+        let badge = metadata.artboard("Badge").unwrap();
+        assert_eq!(
+            character.animation("Wave"),
+            Some(&AnimationInfo {
+                name: "Wave".to_string(),
+                fps: DEFAULT_FPS,
+                duration_frames: 120,
+            })
+        );
+        assert_eq!(
+            badge.animation("Wave"),
+            Some(&AnimationInfo {
+                name: "Wave".to_string(),
+                fps: 24,
+                duration_frames: 0,
+            })
+        );
+        assert_eq!(character.animation("Shine"), None);
+    }
+
+    #[test]
     fn reads_the_artboards_of_a_real_file() {
         let bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -752,6 +832,20 @@ mod tests {
             .map(|artboard| artboard.animations.len())
             .sum();
         assert_eq!(grouped, metadata.animations.len());
+        let detailed: Vec<AnimationInfo> = metadata
+            .artboards
+            .iter()
+            .flat_map(|artboard| artboard.animation_details.iter().cloned())
+            .collect();
+        assert_eq!(detailed, metadata.animation_details);
+        for artboard in &metadata.artboards {
+            let names: Vec<&str> = artboard
+                .animation_details
+                .iter()
+                .map(|animation| animation.name.as_str())
+                .collect();
+            assert_eq!(names, artboard.animations);
+        }
     }
 
     #[test]
